@@ -1,0 +1,98 @@
+name: Build Firmware
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ created ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install SDCC
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y sdcc
+        sdcc --version
+        
+    - name: Install Arduino CLI
+      run: |
+        curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+        sudo mv bin/arduino-cli /usr/local/bin/
+        arduino-cli version
+        
+    - name: Install sduino board package
+      run: |
+        arduino-cli config init
+        arduino-cli config add board_manager.additional_urls https://github.com/tenbaht/sduino/raw/master/package_sduino_stm8_index.json
+        arduino-cli core update-index
+        arduino-cli core install Sduino:stm8
+        
+    - name: Compile main firmware
+      run: |
+        arduino-cli compile \
+          --fqbn Sduino:stm8:stm8s003f3 \
+          --output-dir build \
+          --warnings all \
+          src/AGRINET_Valve_Controller.ino
+          
+    - name: Compile hardware test
+      run: |
+        arduino-cli compile \
+          --fqbn Sduino:stm8:stm8s003f3 \
+          --output-dir build/test \
+          examples/Hardware_Test/Hardware_Test.ino
+          
+    - name: Show build size
+      run: |
+        echo "=== Firmware Size ==="
+        ls -la build/*.hex
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: firmware-${{ github.sha }}
+        path: |
+          build/*.hex
+          build/*.elf
+        retention-days: 30
+        
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: firmware-${{ github.sha }}
+        path: build
+        
+    - name: Create release package
+      run: |
+        mkdir -p release
+        cp build/*.hex release/
+        zip -r release/AGRINET_Valve_Controller_${{ github.ref_name }}.zip \
+          src/ docs/ examples/ hardware/ \
+          README.md LICENSE CHANGELOG.md \
+          platformio.ini Makefile
+          
+    - name: Upload release assets
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          release/*.hex
+          release/*.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,80 @@
+# =============================================================================
+# AGRINET Valve Controller - Git Ignore
+# =============================================================================
+
+# Build outputs
+build/
+.build/
+*.o
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.sym
+*.lk
+*.rel
+*.rst
+*.asm
+
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Arduino IDE
+*.ino.cpp
+*.ino.d
+*.ino.eep
+*.ino.elf
+*.ino.hex
+*.ino.with_bootloader.hex
+
+# SDCC
+*.adb
+*.cdb
+*.omf
+
+# IDE and Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# Secrets (never commit)
+secrets/
+*.key
+*.pem
+credentials.h
+
+# Local configuration
+local_config.h
+.env
+.env.local
