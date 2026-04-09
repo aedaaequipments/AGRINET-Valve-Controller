@@ -1,0 +1,287 @@
+# Valve Controller v4.4 - Functional Guide
+
+## Device Overview
+
+The Valve Controller is a per-zone slave device that drives motorized ball valves. It receives commands from the Weather Station via UART or I2C and positions the valve at 0%, 25%, 50%, 75%, or 100% open.
+
+```
+ ┌────────────────────────────────────────────────────────────────┐
+ │              VALVE CONTROLLER - PER-ZONE SLAVE                │
+ │                                                                │
+ │  ┌──────────────────────────────────────────────────┐         │
+ │  │         STM8S003F3P6 (8KB Flash, 1KB RAM)        │         │
+ │  │                                                    │         │
+ │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐        │         │
+ │  │  │  Motor   │  │  Limit   │  │  UART /  │        │         │
+ │  │  │  Driver  │  │ Switches │  │   I2C    │        │         │
+ │  │  │  L293D   │  │  Open +  │  │  Slave   │        │         │
+ │  │  │  12V DC  │  │  Close   │  │Interface │        │         │
+ │  │  └──────────┘  └──────────┘  └──────────┘        │         │
+ │  │                                                    │         │
+ │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐        │         │
+ │  │  │  EEPROM  │  │ Buttons  │  │ Status   │        │         │
+ │  │  │  128B    │  │  UP/DOWN │  │   LED    │        │         │
+ │  │  │ Position │  │  Manual  │  │          │        │         │
+ │  │  │ + Config │  │  Control │  │          │        │         │
+ │  │  └──────────┘  └──────────┘  └──────────┘        │         │
+ │  └──────────────────────────────────────────────────┘         │
+ │                                                                │
+ │  Valve Body: Motorized Ball Valve (12V DC gear motor)          │
+ │  Travel: 5-30 seconds (auto-calibrated)                        │
+ │  Position: 0% | 25% | 50% | 75% | 100%                       │
+ └────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 1. Valve Positioning
+
+```
+ ┌─────────────────────────────────────────────────────┐
+ │          VALVE POSITION CONTROL                     │
+ │                                                     │
+ │  Command: "open" (or "100")                         │
+ │      │                                              │
+ │      ▼                                              │
+ │  Motor Driver L293D                                 │
+ │  ├── PD2 (IN1) = LOW                                │
+ │  ├── PD3 (IN2) = HIGH  ──▶ Motor runs OPEN         │
+ │      │                                              │
+ │      ▼                                              │
+ │  Monitor:                                           │
+ │  ├── Limit switch PC4 (OPEN) ──▶ Stop motor         │
+ │  ├── Stall detection (motor current drops)          │
+ │  └── Timeout (max 30s travel)                       │
+ │      │                                              │
+ │      ▼                                              │
+ │  Position = 100%                                    │
+ │  Save to EEPROM                                     │
+ │                                                     │
+ │  INTERMEDIATE POSITIONS (timed):                    │
+ │  ├── "quarter" (25%) = travel_time × 0.25           │
+ │  ├── "half"    (50%) = travel_time × 0.50           │
+ │  ├── "thirdquarter" (75%) = travel_time × 0.75      │
+ │  │                                                  │
+ │  │  First: drive to known position (fully closed)   │
+ │  │  Then: run motor for calculated time             │
+ │  │  Accuracy: depends on calibrated travel_time     │
+ └─────────────────────────────────────────────────────┘
+```
+
+---
+
+## 2. Auto-Calibration
+
+```
+ ┌─────────────────────────────────────────────────────┐
+ │          VALVE CALIBRATION                          │
+ │                                                     │
+ │  Command: "cal"                                     │
+ │      │                                              │
+ │      ▼                                              │
+ │  Drive motor to CLOSED                              │
+ │  (until limit switch PC5 or timeout 30s)            │
+ │      │                                              │
+ │      ▼                                              │
+ │  Start timer                                        │
+ │      │                                              │
+ │      ▼                                              │
+ │  Drive motor to OPEN                                │
+ │  (until limit switch PC4 or timeout 30s)            │
+ │      │                                              │
+ │      ▼                                              │
+ │  Stop timer ──▶ travel_time = elapsed ms            │
+ │      │                                              │
+ │      ▼                                              │
+ │  Store travel_time in EEPROM 0x04-0x07              │
+ │  Set CALIBRATED flag in EEPROM 0x03                 │
+ │      │                                              │
+ │      ▼                                              │
+ │  Ready for position commands                        │
+ │  (25% = travel_time × 0.25, etc.)                   │
+ └─────────────────────────────────────────────────────┘
+```
+
+---
+
+## 3. State Machine
+
+```
+ ┌─────────────────────────────────────────────────────┐
+ │          VALVE STATE MACHINE                        │
+ │                                                     │
+ │                    ┌──────┐                         │
+ │         ┌─────────│ BOOT │                         │
+ │         │         └──┬───┘                         │
+ │         │            │                              │
+ │         │            ▼                              │
+ │         │         ┌──────┐                         │
+ │         │         │ INIT │ Load EEPROM config       │
+ │         │         └──┬───┘                         │
+ │         │            │                              │
+ │         │            ▼                              │
+ │  ┌──────┴─┐      ┌──────┐      ┌──────────┐       │
+ │  │ FAULT  │◀─err─│ IDLE │─cmd─▶│  MOVING  │       │
+ │  │        │      └──┬───┘      │ OPEN /   │       │
+ │  │ Auto-  │         │          │ CLOSE    │       │
+ │  │recover │     30s │          └────┬─────┘       │
+ │  └────────┘     idle│               │              │
+ │                     ▼          ┌────┴─────┐       │
+ │               ┌──────────┐    │POSITIONING│       │
+ │               │  SLEEP   │    │ (timed)   │       │
+ │               │  5 mA    │    └────┬──────┘       │
+ │               └────┬─────┘         │              │
+ │               5min │          ┌────┴─────┐       │
+ │                    ▼          │ HOLDING  │       │
+ │               ┌──────────┐   │ At target│       │
+ │               │HIBERNATE │   └──────────┘       │
+ │               │  <1 uA   │                      │
+ │               └──────────┘                      │
+ └─────────────────────────────────────────────────────┘
+```
+
+---
+
+## 4. Communication Interfaces
+
+### UART Mode
+```
+ ┌─────────────────────────────────────────────────────┐
+ │          UART COMMANDS (115200 8N1)                 │
+ │                                                     │
+ │  Commands:                                          │
+ │  ├── open / 100      → Move to 100% open            │
+ │  ├── close / 0       → Move to 0% (fully closed)    │
+ │  ├── half / 50       → Move to 50%                  │
+ │  ├── quarter / 25    → Move to 25%                  │
+ │  ├── thirdquarter/75 → Move to 75%                  │
+ │  ├── cal / calibrate → Auto-learn travel time        │
+ │  ├── status / ?      → Show all status               │
+ │  ├── version / ver   → Firmware version              │
+ │  ├── pos             → Current position %            │
+ │  ├── save            → Persist EEPROM                │
+ │  ├── load            → Load from EEPROM              │
+ │  └── sleep           → Enter light sleep             │
+ │                                                     │
+ │  Addressing (multi-valve bus):                      │
+ │  ├── @1:open         → Valve #1 open                │
+ │  ├── @2:half         → Valve #2 to 50%              │
+ │  └── @3:status       → Valve #3 status              │
+ │                                                     │
+ │  Status Response:                                   │
+ │  P:50 C:Y T:5230 S:2 E:0 N:42                     │
+ │  │    │   │      │   │   └── Cycle count            │
+ │  │    │   │      │   └── Error count                │
+ │  │    │   │      └── State (2=IDLE)                 │
+ │  │    │   └── Travel time (ms)                      │
+ │  │    └── Calibrated (Y/N)                          │
+ │  └── Position (0-100%)                              │
+ └─────────────────────────────────────────────────────┘
+```
+
+### I2C Slave Mode
+```
+ ┌─────────────────────────────────────────────────────┐
+ │          I2C REGISTER MAP (v4.4)                    │
+ │                                                     │
+ │  I2C Address = 0x20 + device_id (EEPROM 0x0F)      │
+ │  Example: device_id=3 → address 0x23               │
+ │                                                     │
+ │  Register Map:                                      │
+ │  ┌──────┬───────────┬─────┬──────────────────────┐ │
+ │  │ Reg  │ Name      │ R/W │ Description          │ │
+ │  ├──────┼───────────┼─────┼──────────────────────┤ │
+ │  │ 0x00 │ DEV_ID    │ R/W │ Device ID (1-31)     │ │
+ │  │ 0x01 │ CMD       │  W  │ Command code         │ │
+ │  │ 0x02 │ POSITION  │  R  │ Current % (0-100)    │ │
+ │  │ 0x03 │ FLAGS     │  R  │ Status bits          │ │
+ │  │ 0x04 │ ERROR     │  R  │ Last error code      │ │
+ │  │ 0x05 │ TRAVEL_HI │  R  │ Travel time MSB      │ │
+ │  │ 0x06 │ TRAVEL_LO │  R  │ Travel time LSB      │ │
+ │  │ 0x07 │ FW_VER    │  R  │ Version (0x44=4.4)   │ │
+ │  └──────┴───────────┴─────┴──────────────────────┘ │
+ │                                                     │
+ │  CMD codes: 0=stop, 1=open, 2=close, 3=half,       │
+ │  4=quarter, 5=3/4, 6=calibrate, 7=save, 8=load,    │
+ │  9=sleep, 10=wake                                   │
+ │                                                     │
+ │  FLAGS bits: [7:4]=reserved, [3]=SLEEPING,          │
+ │  [2]=FAULT, [1]=MOVING, [0]=CALIBRATED              │
+ └─────────────────────────────────────────────────────┘
+```
+
+---
+
+## 5. EEPROM Memory Map
+
+```
+ ┌─────────────────────────────────────────────────────┐
+ │          EEPROM (128 bytes, 0x4000-0x407F)          │
+ │                                                     │
+ │  ┌──────┬────────────┬──────┬───────────────────┐  │
+ │  │ Addr │ Field      │ Size │ Example           │  │
+ │  ├──────┼────────────┼──────┼───────────────────┤  │
+ │  │ 0x00 │ Magic "AG" │  2B  │ 0x41, 0x47        │  │
+ │  │ 0x02 │ Version    │  1B  │ 0x44 (v4.4)       │  │
+ │  │ 0x03 │ Flags      │  1B  │ CALIBRATED|VALID  │  │
+ │  │ 0x04 │ Travel time│  4B  │ 5230 (ms)         │  │
+ │  │ 0x08 │ Position   │  1B  │ 50 (%)            │  │
+ │  │ 0x09 │ Cycle count│  4B  │ 42                │  │
+ │  │ 0x0D │ Errors     │  1B  │ 0                 │  │
+ │  │ 0x0E │ Checksum   │  1B  │ CRC-8             │  │
+ │  │ 0x0F │ Device ID  │  1B  │ 0x03              │  │
+ │  │ 0x10 │ Label      │  8B  │ "VALVE03"         │  │
+ │  └──────┴────────────┴──────┴───────────────────┘  │
+ └─────────────────────────────────────────────────────┘
+```
+
+---
+
+## 6. Power Modes
+
+```
+ ┌─────────────────────────────────────────────────────┐
+ │          POWER CONSUMPTION                          │
+ │                                                     │
+ │  ┌────────────┬─────────┬─────────────────────┐    │
+ │  │ Mode       │ Current │ Description         │    │
+ │  ├────────────┼─────────┼─────────────────────┤    │
+ │  │ Active     │  15 mA  │ Processing commands │    │
+ │  │ Motor ON   │ ~200 mA │ Valve moving (12V)  │    │
+ │  │ Idle       │   5 mA  │ Waiting for command │    │
+ │  │ Sleep      │ 350 uA  │ Light sleep (30s)   │    │
+ │  │ Hibernate  │  <1 uA  │ Deep sleep (5 min)  │    │
+ │  └────────────┴─────────┴─────────────────────┘    │
+ │                                                     │
+ │  Transition: IDLE → 30s → SLEEP → 5min → HIBERNATE │
+ │  Wake: UART byte or button press                    │
+ └─────────────────────────────────────────────────────┘
+```
+
+---
+
+## 7. Build Variants
+
+| Variant | Interface | Features |
+|---------|-----------|----------|
+| `stm8s003f3_i2c` | I2C slave | Multi-valve bus, auto-recovery |
+| `stm8s003f3_uart` | UART + addressing | Multi-valve UART, @id:cmd |
+| `stm8s003f3` | UART basic | Single valve, legacy |
+| `stm8s003f3_debug` | UART | No watchdog, serial debug |
+
+```bash
+pio run -e stm8s003f3_i2c              # Build I2C variant
+pio run -e stm8s003f3_i2c -t upload    # Flash via ST-Link/SWIM
+pio device monitor                      # Serial console (115200)
+```
+
+---
+
+## 8. Safety Features
+
+- **Limit switches** (normally closed): Fail-safe motor stop at endpoints
+- **Stall detection**: Motor current drop detection, 5s timeout
+- **Watchdog**: 1.7s IWDG, resets if firmware hangs
+- **Auto-recovery**: Attempts to return to last known position after fault
+- **EEPROM persistence**: Position survives power loss
+- **Checksum**: CRC-8 on EEPROM data, rejects corrupt configs
