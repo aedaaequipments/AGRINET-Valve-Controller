@@ -1,8 +1,10 @@
 # AGRINET Server Stack — Implementation Progress
 
-**Last updated:** 2026-04-18 11:56 IST
+**Last updated:** 2026-04-18 (late session)
 
 Live implementation tracker across Pi4 (MQTT broker) and Pi5 (application server).
+
+For the **runtime walkthrough of every data path**, see the [Functional Flow doc](https://github.com/aedaaequipments/admn-vend-dshbrd-doc/blob/main/server-architecture/10-functional-flow.md) (or the mirror at `sasyamithra-server/pi5-backend/docs/FUNCTIONAL_FLOW.md`).
 
 ---
 
@@ -17,11 +19,12 @@ Live implementation tracker across Pi4 (MQTT broker) and Pi5 (application server
 | 4 — PostgreSQL schema + admin user + farm01 seed | ✅ DONE | 17 tables incl. audit partitions |
 | 5a — Grafana dashboards (InfluxDB + Postgres sources) | ✅ DONE | live telemetry chart, farms table |
 | 5b — Backup automation (daily pg_dump, weekly Influx) | ✅ DONE | cron scheduled |
-| 6 — Device provisioning (CLI + Pi4 apply script) | ✅ DONE | queue-based, Samba mount |
-| 8 — Backend API (FastAPI) | 🟡 IN PROGRESS | auth + /me + /admin/devices drafted |
+| 6 — Device provisioning (CLI + Pi4 apply script + auto-cron) | ✅ DONE | queue-based via Samba, root crontab `* * * * *` on Pi4 |
+| 8 — Backend API (FastAPI) | ✅ DONE | `/health`, `/api/auth/login`, `/api/users/me`, `/api/admin/devices` verified end-to-end |
+| 10a — Node-RED heartbeat monitor + Gotify push | ✅ DONE | 5-min silence → Postgres alert + mobile push notification |
 | 7 — Firmware `cloud_sync.c` updates | ⬜ pending | envelope, timestamps, nested topics |
 | 9 — Grafana dashboard provisioning (JSON) | ⬜ pending | 6 prebuilt dashboards per spec |
-| 10 — Node-RED automation flows | ⬜ pending | heartbeat alerts, soil→valve rules |
+| 10b — More Node-RED flows (soil moisture, valve sched) | ⬜ pending | |
 | 11 — Security hardening (Nginx TLS, fail2ban) | ⬜ pending | |
 | 12 — Monitoring (Uptime Kuma, watchdogs) | ⬜ pending | |
 | 13 — End-to-end field test with real STM32 | ⬜ pending | |
